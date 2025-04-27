@@ -78,11 +78,18 @@ if uploaded_file:
             # Display cleaned data
             st.subheader("🧽 Cleaned Data Preview:")
             st.dataframe(cleaned_df.head())
+
+            # NEW: Download cleaned dataset
+            st.download_button(
+                label="📥 Download Cleaned Data",
+                data=cleaned_df.to_csv(index=False).encode('utf-8'),
+                file_name=f"cleaned_dataset_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                mime='text/csv'
+            )
         else:
             st.warning("⚠️ Please enter a cleaning instruction before clicking the button.")
 else:
     st.info("👆 Please upload a CSV file to begin.")
-
 
 
 
