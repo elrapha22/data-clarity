@@ -2,46 +2,120 @@ import streamlit as st
 import pandas as pd
 from datetime import datetime
 import os
+from fuzzywuzzy import fuzz
 
-# Set page configuration
+# --- Set page configuration
 st.set_page_config(page_title="Data Clarity", layout="centered")
 
-# Helper function to log actions
+# --- Helper Functions
 def log_action(instruction, status):
     """Save the cleaning action to a log file."""
     log_folder = "logs"
-    os.makedirs(log_folder, exist_ok=True)  # Create folder if it doesn't exist
+    os.makedirs(log_folder, exist_ok=True)
     log_file = os.path.join(log_folder, "cleaning_log.txt")
-    
+
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     with open(log_file, "a") as f:
         f.write(f"{timestamp} | Instruction: '{instruction}' | Status: {status}\n")
 
-# Title and Description
+def interpret_instruction(instruction, df, threshold=0.4):
+    """Interpret flexible cleaning instructions and modify the DataFrame."""
+    instruction = instruction.lower()
+    cleaned_df = df.copy()
+
+    # Define possible actions and keywords
+    action_mapping = {
+        "remove missing rows": ["remove rows with missing", "delete rows missing", "drop rows missing", "remove empty rows"],
+        "drop missing columns": ["drop columns missing", "remove empty columns", "delete columns missing", "drop null columns"],
+        "remove duplicates": ["remove duplicates", "delete duplicates", "drop repeated rows", "remove repeated entries"],
+        "fill missing": ["fill missing", "fix missing", "replace missing", "fill empty cells"],
+        "standardize columns": ["standardize headers", "clean column names", "standardize columns"],
+    }
+
+    best_match = None
+    best_score = 0
+
+    for action, phrases in action_mapping.items():
+        for phrase in phrases:
+            score = fuzz.partial_ratio(instruction, phrase)
+            if score > best_score:
+                best_match = action
+                best_score = score
+
+    if best_score < 60:  # If no good match, return None
+        return cleaned_df, None
+
+    if best_match == "remove missing rows":
+        cleaned_df = cleaned_df.dropna()
+        action = "Removed rows with missing values"
+
+    elif best_match == "drop missing columns":
+        cleaned_df = cleaned_df.dropna(axis=1, thresh=int((1 - threshold) * len(df)))
+        action = f"Dropped columns with more than {threshold*100:.0f}% missing values"
+
+    elif best_match == "remove duplicates":
+        cleaned_df = cleaned_df.drop_duplicates()
+        action = "Removed duplicate rows"
+
+    elif best_match == "fill missing":
+        cleaned_df = cleaned_df.fillna("Unknown")
+        action = "Filled missing values with 'Unknown'"
+
+    elif best_match == "standardize columns":
+        cleaned_df.columns = cleaned_df.columns.str.strip().str.lower().str.replace(' ', '_')
+        action = "Standardized column names"
+
+    else:
+        action = None
+
+    return cleaned_df, action
+
+def suggest_corrections():
+    """Suggest likely actions when the user's instruction isn't recognized."""
+    suggestions = [
+        "Remove all rows with missing values",
+        "Drop columns with more than 40% missing values",
+        "Remove duplicate rows",
+        "Fill missing values with 'Unknown'",
+        "Standardize column names",
+    ]
+    message = "⚠️ Instruction not recognized.\n\nYou could try:\n\n"
+    message += "\n".join(f"- {s}" for s in suggestions)
+    return message
+
+# --- Session State Initialization
+if "action_history" not in st.session_state:
+    st.session_state.action_history = []
+if "current_df" not in st.session_state:
+    st.session_state.current_df = None
+
+# --- UI Layout
 st.title("🧹 Data Clarity")
 st.subheader("AI-powered data cleaning tool for HR teams")
 
-# Instructions
 st.write("""
-Upload a CSV file, enter a plain-English instruction like:
-> "Drop all columns with more than 40% missing values"
-...and watch the magic happen.
+Upload a CSV file and enter plain-English instructions like:
+- "Drop columns missing more than 40%"
+- "Remove duplicate rows"
+- "Fill missing Salary column with 'Unknown'"
+- "Standardize headers"
+
+*Examples: remove duplicates, fill missing values, clean column names, drop empty columns.*
 """)
 
-# Upload Section
 uploaded_file = st.file_uploader("Upload your HR dataset", type=["csv"])
 
-# If a file is uploaded
 if uploaded_file:
-    # Read the file
-    df = pd.read_csv(uploaded_file)
-    
-    # Success message and data preview
-    st.success("✅ File uploaded! Here's a quick preview:")
-    st.dataframe(df.head())  # Preview first few rows
+    if st.session_state.current_df is None:
+        df = pd.read_csv(uploaded_file)
+        st.session_state.original_df = df.copy()
+        st.session_state.current_df = df.copy()
 
-    # Dataset Overview
+    st.success("✅ File uploaded! Here's a quick preview:")
+    st.dataframe(st.session_state.current_df.head())
+
     with st.expander("📊 Dataset Overview", expanded=True):
+        df = st.session_state.current_df
         st.markdown(f"**Rows:** {df.shape[0]} | **Columns:** {df.shape[1]}")
         missing_total = df.isnull().sum().sum()
         missing_pct = (missing_total / (df.shape[0] * df.shape[1])) * 100
@@ -55,41 +129,61 @@ if uploaded_file:
         else:
             st.markdown("✅ No missing values detected.")
 
-    # User Instruction Input
-    st.subheader("🧹 Enter your cleaning instruction:")
-    user_instruction = st.text_input("For example: 'Remove all rows with missing employee IDs'")
+    with st.sidebar:
+        st.header("📜 Action History")
+        if st.session_state.action_history:
+            for i, record in enumerate(st.session_state.action_history, 1):
+                st.write(f"{i}. {record}")
+        else:
+            st.write("No actions yet.")
 
-    # Action Button
+    st.subheader("🧹 Enter your cleaning instruction:")
+
+    threshold = st.slider(
+        "Set missing value threshold for column dropping:",
+        min_value=0.0, max_value=1.0, value=0.4, step=0.05
+    )
+
+    user_instruction = st.text_input("For example: Remove rows with missing values, Drop empty columns, Standardize headers")
+
     if st.button("Apply Cleaning Instruction"):
         if user_instruction:
             st.info("⚙️ Processing your instruction...")
+            cleaned_df, action = interpret_instruction(user_instruction, st.session_state.current_df, threshold)
 
-            cleaned_df = df.copy()  # Work on a copy
+            if action:
+                st.session_state.current_df = cleaned_df.copy()
+                st.success(f"🧹 {action}!")
+                log_action(user_instruction, f"Success - {action}")
+                st.session_state.action_history.append(action)
 
-            # Very basic interpretation
-            if "missing" in user_instruction.lower() and ("row" in user_instruction.lower() or "rows" in user_instruction.lower()):
-                cleaned_df = cleaned_df.dropna()
-                st.success("🧹 Successfully removed rows with missing values!")
-                log_action(user_instruction, "Success - Removed rows with missing values")
+                st.subheader("🧽 Cleaned Data Preview:")
+                st.dataframe(st.session_state.current_df.head())
+
+                csv = st.session_state.current_df.to_csv(index=False).encode('utf-8')
+                st.download_button(
+                    label="📥 Download Cleaned Data",
+                    data=csv,
+                    file_name='cleaned_data.csv',
+                    mime='text/csv',
+                )
             else:
-                st.warning("⚠️ Sorry, instruction not recognized yet. Try mentioning 'missing' and 'rows'.")
+                st.warning(suggest_corrections())
                 log_action(user_instruction, "Warning - Unsupported instruction")
-
-            # Display cleaned data
-            st.subheader("🧽 Cleaned Data Preview:")
-            st.dataframe(cleaned_df.head())
-
-            # NEW: Download cleaned dataset
-            st.download_button(
-                label="📥 Download Cleaned Data",
-                data=cleaned_df.to_csv(index=False).encode('utf-8'),
-                file_name=f"cleaned_dataset_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
-                mime='text/csv'
-            )
         else:
-            st.warning("⚠️ Please enter a cleaning instruction before clicking the button.")
+            st.warning("⚠️ Please enter or select a cleaning instruction first.")
+
+    if st.button("🔄 Reset to Original Data"):
+        st.session_state.current_df = st.session_state.original_df.copy()
+        st.session_state.action_history = []
+        st.success("✅ Data reset to original upload!")
+
 else:
     st.info("👆 Please upload a CSV file to begin.")
+
+
+
+
 
 
 
