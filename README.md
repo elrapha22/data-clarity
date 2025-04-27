@@ -1,6 +1,6 @@
 # 🧹 Data Clarity
 
-**AI-powered data cleaning tool built for non-technical professionals—starting with HR teams.**
+**Built Data Clarity to help HR teams clean messy datasets using plain English — no coding required.**
 
 ---
 
